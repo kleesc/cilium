@@ -31,6 +31,7 @@ import (
 
 const (
 	// GcInterval is the garbage collection interval.
+	// #FIXME find a way to change this value
 	GcInterval int = 10
 )
 
@@ -129,16 +130,16 @@ func EnableConntrackGC(ipv4, ipv6 bool) {
 	}()
 }
 
-// RmCTEntriesOf cleans the connection tracking table of the given endpoint `e`.
-// It removes all CT entries that of the CT table local or global, defined by isLocal,
-// that contains:
+// ModifyEntriesOf modifies the connection tracking table of the given endpoint
+// `e`. It modifies all CT entries that of the CT table local or global, defined
+// by isLocal, that contains:
 //  - all the IP addresses given in the ips slice AND
-//  - any of the given ids in the ids map, maps to true and matches the
+//  - any of the given ids in the idsMod map, maps to true and matches the
 //    src_sec_id in the CT table.
-func RmCTEntriesOf(ipv4Enabled bool, e *endpoint.Endpoint, isLocal bool, ips []net.IP, ids policy.RuleContexts) {
+func ModifyEntriesOf(ipv4Enabled bool, e *endpoint.Endpoint, isLocal bool, ips []net.IP, idsMod policy.SecurityIDContexts) {
 
-	gcFilter := ctmap.NewGCFilterBy(ctmap.GCFilterByID)
-	gcFilter.IDsToRm = ids
+	gcFilter := ctmap.NewGCFilterBy(ctmap.GCFilterByIDToMod)
+	gcFilter.IDsToMod = idsMod
 	for _, ip := range ips {
 		gcFilter.IP = ip
 
@@ -150,12 +151,12 @@ func RmCTEntriesOf(ipv4Enabled bool, e *endpoint.Endpoint, isLocal bool, ips []n
 	}
 }
 
-// FlushCTEntriesOf cleans the connection tracking table of the given endpoint `e`.
-// It removes all CT entries that of the CT table local or global, defined by isLocal,
-// that contains:
+// FlushCTEntriesOf cleans the connection tracking table of the given endpoint
+// `e`. It removes all CT entries that of the CT table local or global, defined
+// by isLocal, that contains:
 //  - all the IP addresses given in the ips slice AND
 //  - does not belong to the list of ids to keep
-func FlushCTEntriesOf(ipv4Enabled bool, e *endpoint.Endpoint, isLocal bool, ips []net.IP, idsToKeep policy.RuleContexts) {
+func FlushCTEntriesOf(ipv4Enabled bool, e *endpoint.Endpoint, isLocal bool, ips []net.IP, idsToKeep policy.SecurityIDContexts) {
 
 	gcFilter := ctmap.NewGCFilterBy(ctmap.GCFilterByIDsToKeep)
 	gcFilter.IDsToKeep = idsToKeep

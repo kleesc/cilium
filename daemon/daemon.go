@@ -253,13 +253,13 @@ func (d *Daemon) DebugEnabled() bool {
 	return d.conf.Opts.IsEnabled(endpoint.OptionDebug)
 }
 
-// CleanCTEntries cleans the connection tracking of the given endpoint
+// ModifyCTEntries cleans the connection tracking of the given endpoint
 // where the given endpoint IPs' and the idsToRm match the CT entry fields.
 // isCTLocal should bet set as true if the endpoint's CT table is either
 // local or not (if is not local then is assumed to be global).
 // Implementation of pkg/endpoint.Owner interface
-func (d *Daemon) CleanCTEntries(e *endpoint.Endpoint, isCTLocal bool, ips []net.IP, idsToRm policy.RuleContexts) {
-	endpointmanager.RmCTEntriesOf(!d.conf.IPv4Disabled, e, isCTLocal, ips, idsToRm)
+func (d *Daemon) ModifyCTEntries(e *endpoint.Endpoint, isCTLocal bool, ips []net.IP, idsToMod policy.SecurityIDContexts) {
+	endpointmanager.ModifyEntriesOf(!d.conf.IPv4Disabled, e, isCTLocal, ips, idsToMod)
 }
 
 // FlushCTEntries flushes the connection tracking of the given endpoint
@@ -267,7 +267,7 @@ func (d *Daemon) CleanCTEntries(e *endpoint.Endpoint, isCTLocal bool, ips []net.
 // isCTLocal should bet set as true if the endpoint's CT table is either
 // local or not (if is not local then is assumed to be global).
 // Implementation of pkg/endpoint.Owner interface
-func (d *Daemon) FlushCTEntries(e *endpoint.Endpoint, isCTLocal bool, ips []net.IP, idsToKeep policy.RuleContexts) {
+func (d *Daemon) FlushCTEntries(e *endpoint.Endpoint, isCTLocal bool, ips []net.IP, idsToKeep policy.SecurityIDContexts) {
 	endpointmanager.FlushCTEntriesOf(!d.conf.IPv4Disabled, e, isCTLocal, ips, idsToKeep)
 }
 
