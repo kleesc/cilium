@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/policy"
 )
 
 // StreamControlCtx holds the state of a gRPC stream server instance we need to know about.
@@ -20,6 +21,13 @@ func (ctx *StreamControlCtx) stop() {
 	}
 	// Wait for everyone to be done.
 	ctx.wg.Wait()
+}
+
+type versionCompletion struct {
+	version    uint64
+	msg        string
+	expiration time.Time
+	completion policy.Completion // Ack/Nack callback interface
 }
 
 // StreamControl implements a generic Envoy streamed gRPC API. API
@@ -38,6 +46,58 @@ type StreamControl struct {
 	sentVersion             uint64
 	currentVersion          uint64
 	currentVersionNackCount uint
+	completions             []versionCompletion
+}
+
+func (ctrl *StreamControl) addCompletion(completions policy.CompletionContainer, msg string) {
+	if completions == nil {
+		return
+	}
+
+	comp, timeout := completions.AddCompletion()
+
+	// Note that we do not start a timer for the timeout, but rely on NACKs to be followed by
+	// retries that allows for checking for timeouts at some times in future. This should
+	// also work accross Envoy restarts.
+	if comp != nil {
+		log.Debug("Envoy: AddCompletion: ", msg)
+		ctrl.completions = append(ctrl.completions,
+			versionCompletion{ctrl.currentVersion, msg, time.Now().Add(timeout), comp})
+	}
+}
+
+// Called with ctrl.cond.L.Lock() held
+func (ctrl *StreamControl) handleCompletions(version uint64, success bool) {
+	now := time.Now()
+
+	for idx := 0; idx < len(ctrl.completions); {
+		result := success
+
+		if version >= ctrl.completions[idx].version {
+			// Ack or Nack for this version OR later received
+		} else if now.After(ctrl.completions[idx].expiration) {
+			// Timed out, return failure.
+			result = false
+		} else {
+			// Proceed to the next entry
+			idx++
+			continue
+		}
+
+		comp := ctrl.completions[idx]
+
+		res := "NACK"
+		if result {
+			res = "ACK"
+		}
+		log.Debug("Envoy: ", ctrl.name, " ", comp.msg, " ", res, ", time left: ", comp.expiration.Sub(now))
+
+		// Remove the entry
+		ctrl.completions[idx] = ctrl.completions[len(ctrl.completions)-1]
+		ctrl.completions = ctrl.completions[:len(ctrl.completions)-1]
+
+		comp.completion.Completed(result)
+	}
 }
 
 func makeStreamControl(name string) StreamControl {
@@ -74,12 +134,15 @@ func (ctrl *StreamControl) updateVersionLocked(version uint64) bool {
 		// will be re-tried.
 		ctrl.sentVersion = version
 		log.Debug("Envoy: ", ctrl.name, " NACK received, last acked version is: ", version)
+		// Note that we do not trigger an unsuccessful completion, but let that happen
+		// at timeout instead.
 	} else if version == 0 {
 		// Envoy has (re)started, make sure we send the current configuration (again)
 		ctrl.sentVersion = version
 		log.Debug("Envoy: ", ctrl.name, " detected Envoy (re)start ")
 	} else {
 		log.Debug("Envoy: ", ctrl.name, " ACK received: ", version)
+		ctrl.handleCompletions(version, true)
 	}
 	ctrl.ackedVersion = version // remember the last acked version
 
@@ -119,6 +182,7 @@ func (ctrl *StreamControl) startHandler(ctx *StreamControlCtx, handler func() er
 				ctrl.sentVersion = ctrl.currentVersion
 			} else {
 				// Sending failed on an error, stop handling
+				ctrl.handleCompletions(ctrl.currentVersion, false) // Fail current version
 				break
 			}
 		}
@@ -157,7 +221,8 @@ func (ctrl *StreamControl) handleVersion(ctx *StreamControlCtx, version uint64, 
 					log.Debug("Envoy: ", ctrl.name, " trying version ", version, " again after ", d)
 					time.Sleep(d)
 					ctrl.cond.L.Lock()
-					// Signal only not already stopped and version is still the same.
+					ctrl.handleCompletions(0, false) // Handle timeouts
+					// Signal only if not already stopped and version is still the same.
 					// This allows later backoffs to continue undisturbed if need be.
 					if ctrl.handled && ctrl.currentVersion == version {
 						ctrl.cond.Signal()
@@ -175,7 +240,8 @@ func (ctrl *StreamControl) handleVersion(ctx *StreamControlCtx, version uint64, 
 
 func (ctrl *StreamControl) stopHandling() {
 	ctrl.cond.L.Lock()
-	ctrl.handled = false // Tell handler to stop
+	ctrl.handled = false                          // Tell handler to stop
+	ctrl.handleCompletions(math.MaxUint64, false) // Fail remaining completions
 	ctrl.cond.Signal()
 	ctrl.cond.L.Unlock()
 }
@@ -183,9 +249,9 @@ func (ctrl *StreamControl) stopHandling() {
 // f is called while the lock is held
 func (ctrl *StreamControl) bumpVersionFunc(f func()) {
 	ctrl.cond.L.Lock()
-	f()
 	ctrl.currentVersion++
 	ctrl.currentVersionNackCount = 0
+	f()
 	ctrl.cond.Signal()
 	ctrl.cond.L.Unlock()
 }
